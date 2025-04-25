@@ -1,0 +1,9 @@
+# Qedit Configuration File
+# If you want to configure QEditor, place this file in your home directory: ~/.qedit.rc
+
+# Editor settings
+tab_width=8  # Tab width in spaces
+default_filename=test.txt  # Default filename for saving
+
+# Appearance
+show_line_numbers=true  # Show line numbers
