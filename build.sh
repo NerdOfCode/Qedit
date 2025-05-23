@@ -7,6 +7,7 @@ set -e
 BUILD_TYPE="Debug"
 BUILD_DIR="build"
 CLEAN=false
+RUN_TESTS=false
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -23,9 +24,18 @@ while [[ $# -gt 0 ]]; do
             BUILD_DIR="$2"
             shift 2
             ;;
+        --test)
+            RUN_TESTS=true
+            shift
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--release] [--clean] [--build-dir <directory>]"
+            echo "Usage: $0 [--release] [--clean] [--build-dir <directory>] [--test]"
+            echo "Options:"
+            echo "  --release     Build in Release mode"
+            echo "  --clean       Clean build directory before building"
+            echo "  --build-dir   Specify build directory (default: build)"
+            echo "  --test        Build and run tests"
             exit 1
             ;;
     esac
@@ -53,5 +63,11 @@ cmake -DCMAKE_BUILD_TYPE="$BUILD_TYPE" ..
 # Build the project
 echo "Building project..."
 cmake --build . -- -j$(nproc)
+
+if [ "$RUN_TESTS" = true ]; then
+    echo "Running tests..."
+    ./editor_test --reporter console -s
+    ./config_test --reporter console -s
+fi
 
 echo "Build completed successfully!" 
