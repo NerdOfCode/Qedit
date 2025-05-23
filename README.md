@@ -8,6 +8,13 @@ This editor was created as a personal project for learning C++.
 
 That being said, it *will* find a way to break so don't edit anything you actually need with it.
 
+## Prerequisites
+
+- C++17 compatible compiler (GCC 7+, Clang 5+, MSVC 2017+)
+- CMake 3.10 or higher
+- Make or Ninja build system
+- Unix-like operating system (Linux, macOS)
+
 ## Configuring
 
 Qedit includes a configuration system that parses `~/.qeditrc` by default.
@@ -43,11 +50,27 @@ Or, use the build script via:
 ./build.sh --release
 ```
 
+### Optional
+Add an alias to your shell configuration:
+```bash
+# For bash users (add to ~/.bashrc):
+echo "alias qedit=\"$(pwd)/build/Qedit\"" >> ~/.bashrc
+source ~/.bashrc
+
+# For zsh users (add to ~/.zshrc):
+echo "alias qedit=\"$(pwd)/build/Qedit\"" >> ~/.zshrc
+source ~/.zshrc
+
+# For fish users (add to ~/.config/fish/config.fish):
+echo "alias qedit=\"$(pwd)/build/Qedit\"" >> ~/.config/fish/config.fish
+source ~/.config/fish/config.fish
+```
+
 ## Testing
 
 Qedit uses the Catch2 Testing Framework for unit tests. There are two ways to run the tests:
 
-1. Using CMake's test runner:
+Using CMake's test runner:
 ```bash
 cd build
 cmake ..
@@ -57,7 +80,7 @@ ctest
 ctest --output-on-failure
 ```
 
-2. Running individual test executables:
+Running individual test executables:
 ```bash
 # Run all editor tests
 ./build/editor_test -d yes
