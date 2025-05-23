@@ -11,6 +11,7 @@ list(FILTER SOURCES EXCLUDE REGEX ".*_test\\.cpp$")
 add_executable(Qedit
         main.cpp
         ${SOURCES}
+        src/EditorCommands.h
 )
 
 # Config test executable
