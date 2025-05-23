@@ -21,7 +21,8 @@ namespace QEditor {
         if (!homeDir) {
             return "";
         }
-        return std::string(homeDir) + "/.qedit.rc";
+
+        return std::string(homeDir) + "/" + CONFIG_FILENAME;
     }
     
     void Config::parse() {

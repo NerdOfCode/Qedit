@@ -7,7 +7,11 @@
 #include <thread>
 #include <sys/ioctl.h>
 
-static termios orig_termios;
+#include "EditorCommands.h"
+
+namespace {
+    termios orig_termios;
+}
 
 Editor::Editor() {
     enableRawMode();
@@ -24,6 +28,9 @@ Editor::Editor() {
     if (const auto lineNums = config.getBool("show_line_numbers")) {
         showLineNumbers = *lineNums;
     }
+
+    filename = "";
+    commandBuffer = "";
 
     // Save terminal state and switch to alternate screen
     std::cout << "\x1b[?1049h" << std::flush;
@@ -108,12 +115,24 @@ void Editor::processKeypress() {
             if (c == 'i') {
                 editMode();
             } else if (c == ':') {
-                mode = COMMAND;
                 commandBuffer.clear();
+
+                mode = COMMAND;
+                if (cur_y >= buffer.size()) {
+                    // Ensure at least one line exists
+                    buffer.emplace_back("");
+                }
+
+                if (buffer[cur_y].size() < 2) {
+                    // Pad with spaces to at least 2 chars for cur x positioning
+                    buffer[cur_y].resize(2, ' ');
+                }
+
+                cur_x = 1;
+
                 commandBuffer += c;
-                std::cout << "\033[" << screenRows << ";1H";
             } else if (c == 'x') {
-                deleteText();
+                deleteChar();
             } else if (c == 'o') {
                 cur_x = buffer[cur_y].length();
 
@@ -130,6 +149,10 @@ void Editor::processKeypress() {
                     commandBuffer.clear();
                     deleteLine();
                 }
+            } else if (c == 'A') {
+                editMode();
+
+                jumpToEnd();
             } else if (c == 'D') {
                 deleteToEol();
             } else if (c == 'w') {
@@ -137,6 +160,19 @@ void Editor::processKeypress() {
             } else if (c == '0') {
                 cur_x = 0;
             } else {
+                // Handle multibyte input by ignoring them
+                if (c == '\x1b') {
+                    // Possible escape sequence (i.e., arrow key)
+                    char seq[2];
+                    if (read(STDIN_FILENO, &seq[0], 1) == 1 &&
+                        read(STDIN_FILENO, &seq[1], 1) == 1) {
+                        // Check for arrow key sequence: [A, B, C, D]
+                        if (seq[0] == '[' && (seq[1] >= 'A' && seq[1] <= 'D')) {
+                            return;
+                        }
+                    }
+                }
+
                 moveCursor(c);
             }
         } else if (mode == EDIT) {
@@ -150,18 +186,28 @@ void Editor::processKeypress() {
 
                 setCursorShapeNormal();
             } else if (c == 127) { // backspace
-                deleteText();
+                deleteChar();
             } else if (c == '\n') {
                 insertNewline();
             } else if (c == '\t') {
                 buffer[cur_y].insert(cur_x, 1, '\t');
-                ++cur_x;
+                buffer[cur_y] = expandTabs(buffer[cur_y]);
+
+                cur_x += TAB_WIDTH;
             } else { // insert
                 insertText(c);
             }
         } else if (mode == COMMAND) {
+            // Move cursor right one position, unless delete key
+            if (c != 127) {
+                ++cur_x;
+            } else {
+                if (cur_x > 0) --cur_x;
+            }
+
             if (c == '\n') {
-                processCommand();
+                if (!commandBuffer.empty())
+                    processCommand();
 
                 mode = VIEW;
             } else if (c == 127) { // backspace
@@ -171,7 +217,7 @@ void Editor::processKeypress() {
                 mode = VIEW;
                 commandBuffer.clear();
             } else {
-                commandBuffer += c;
+                commandBuffer.push_back(c);
             }
         }
     }
@@ -179,28 +225,31 @@ void Editor::processKeypress() {
     drawScreen();
 }
 
-void Editor::moveCursor(char direction) {
-    if (direction == 'h' || direction == 127) { // Move left
+void Editor::moveCursor(const char direction) {
+    if (direction == 'h' || direction == 127) { // Move left for "h" key or delete/backspace
         if (cur_x > 0) {
             --cur_x;
         }
     } else if (direction == 'l') { // Move right
-        if (cur_x + 1 < buffer[cur_y].size()) {
-            ++cur_x;
+        if (cur_y < buffer.size()) {
+            if (const std::string& line = buffer[cur_y]; cur_x < line.size() - 1) {
+                ++cur_x;
+            }
         }
     } else if (direction == 'j') { // Move down
         if (cur_y + 1 < buffer.size()) {
             ++cur_y;
 
-            if (cur_x > buffer[cur_y].size()) {
-                cur_x = buffer[cur_y].size() - 1;
+            if (const std::string& line = buffer[cur_y]; cur_x >= line.length()) {
+                // clamp cur_x to end of line (or 0 if empty)
+                cur_x = line.empty() ? 0 : line.size() - 1;
             }
         }
     } else if (direction == 'k') { // Move up
         if (cur_y > 0) {
             --cur_y;
 
-            if (cur_x > buffer[cur_y].size()) {
+            if (cur_x >= buffer[cur_y].size()) {
                 cur_x = buffer[cur_y].size() - 1;
             }
         }
@@ -220,10 +269,27 @@ void Editor::insertText(const char c) {
     ++cur_x;
 }
 
-void Editor::deleteText() {
-    if (cur_x >= 0) {
+void Editor::deleteChar() {
+    if (cur_y >= buffer.size()) {
+        // nothing to delete
+        return;
+    }
+
+    // if empty line, delete it
+    if (buffer[cur_y].empty()) {
+        const auto it = buffer.begin() + static_cast<std::vector<std::string>::difference_type>(cur_y);
+        buffer.erase(it);
+
+        if (cur_y > 0) {
+            cur_y = buffer.empty() ? 0 : cur_y - 1;
+            cur_x = buffer[cur_y].length() - 1;
+        }
+    } else {
+        const bool deleted = cur_x >= buffer[cur_y].size();
+
         buffer[cur_y].erase(cur_x, 1);
-        --cur_x;
+
+        if (deleted) --cur_x;
     }
 }
 
@@ -251,8 +317,17 @@ void Editor::loadFile(const std::string& filename) {
     file.close();
 }
 
-void Editor::saveFile(const std::string& filename) {
-    std::ofstream file(filename);
+void Editor::saveFile(const std::string& filename) const {
+    // Trim whitespaces on the ends of the filename
+    const std::string trimmedFilename = trimWhitespace(filename);
+
+    if (trimmedFilename.empty()) {
+        setStatusMessage(EditorCommands::INVALID_FILENAME_MSG);
+
+        return;
+    }
+
+    std::ofstream file(trimmedFilename);
 
     if (!file) {
         std::ofstream newFile(filename);
@@ -282,22 +357,22 @@ void Editor::drawScreen() const {
     std::cout << "\x1b[H";
     
     // Calculate line number width
-    int lineNumWidth = 0;
+    size_t lineNumWidth = 0;
     if (showLineNumbers) {
         lineNumWidth = std::to_string(buffer.size()).length() + 1; // +1 for the space after
     }
 
     // Draw content line by line with explicit positioning
-    for (int i = 0; i < screenRows - 1; ++i) {
+    for (size_t i = 0; i < screenRows - 1; ++i) {
         // Position cursor at start of each line
-        std::cout << "\x1b[" << (i+1) << ";1H";
+        std::cout << "\x1b[" << (i + 1) << ";1H";
 
         // Clear the entire line first
         std::cout << "\x1b[2K";
 
-        // Draw line number if enabled
+        // Draw line numbers if config'd
         if (showLineNumbers) {
-            if (i < buffer.size()) {
+            if (i < buffer.size() || i == 0) {
                 // Right-align the line number
                 std::string lineNum = std::to_string(i + 1);
                 std::string padding(lineNumWidth - lineNum.length() - 1, ' ');
@@ -311,7 +386,7 @@ void Editor::drawScreen() const {
         // Draw content if available
         if (i < buffer.size()) {
             std::cout << expandTabs(buffer[i]);
-        } else {
+        } else if (i != 0) {
             std::cout << "~";
         }
     }
@@ -323,30 +398,26 @@ void Editor::drawScreen() const {
         std::cout << ":" << commandBuffer.substr(1);
     }
 
-    // if (
-    //     const auto now = std::chrono::steady_clock::now(); !statusMessage.empty()
-    //     && std::chrono::duration_cast<std::chrono::seconds>(now - statusMessageTime).count() < 3
-    // ) {
-        // const int row = screenRows; // last row
-        // int col = screenCols - static_cast<int>(statusMessage.length()) + 1;
-        // if (col < 1) col = 1; // protect against overflow
-        //
-        // std::cout << "\x1b[" << row << ";" << col << "H" << statusMessage;
-    // }
-
     // Show status message if any
     if (!statusMessage.empty()) {
-        int col = screenCols - static_cast<int>(statusMessage.length()) + 1;
+        size_t col = screenCols - statusMessage.length() + 1;
+
         if (col < 1) col = 1;
+
         std::cout << "\x1b[" << screenRows << ";" << col << "H" << statusMessage;
     }
 
     // Position cursor at edit location
-    const int renderX = getRenderX(buffer[cur_y], cur_x);
-    if (showLineNumbers) {
-        lineNumWidth = std::to_string(buffer.size()).length() + 1; // +1 for the space after
+    if (mode != COMMAND) {
+        const int renderX = getRenderX(buffer[cur_y], cur_x);
+        if (showLineNumbers) {
+            lineNumWidth = std::to_string(buffer.size()).length() + 1; // +1 for the space after
+        }
+        std::cout << "\x1b[" << (cur_y + 1) << ";" << (renderX + lineNumWidth + 1) << "H";
+    } else {
+        // Move cursor to command bar
+        std::cout << "\033[" << screenRows << ";" << cur_x + 1 << "H" << std::flush;
     }
-    std::cout << "\x1b[" << (cur_y + 1) << ";" << (renderX + lineNumWidth + 1) << "H";
 
     // Show cursor again
     std::cout << "\x1b[?25h";
@@ -355,25 +426,47 @@ void Editor::drawScreen() const {
 }
 
 void Editor::processCommand() {
-    if (commandBuffer == ":w") {
+    if (commandBuffer == EditorCommands::WRITE ||
+        commandBuffer == EditorCommands::WRITE_QUIT) {
         std::string file = this->filename;
 
         if (file.empty()) {
-            const auto defaultFilename = config.getString("default_filename");
+            const std::optional<std::string> defaultFilename = config.getString("default_filename");
 
-            file = *defaultFilename;
+            if (defaultFilename && !defaultFilename->empty()) {
+                file = *defaultFilename;
+            } else {
+                setStatusMessage(EditorCommands::INVALID_FILENAME_MSG);
+
+                return;
+            }
         }
 
         saveFile(file);
-        setStatusMessage("wrote: \"" + file + "\"");
-    } else if (commandBuffer == ":q") {
+        setStatusMessage(EditorCommands::WROTE_TO + file);
+    }
+
+    if (commandBuffer == EditorCommands::QUIT ||
+        commandBuffer == EditorCommands::WRITE_QUIT) {
         running = false;
-    } else if (commandBuffer.substr(0, 3) == ":w ") {
+    }
+
+    if (commandBuffer.substr(0, 3) == EditorCommands::WRITE + " ") {
         // Save to specified file
-        std::string saveFilename = commandBuffer.substr(3);
+        const std::string saveFilename = trimWhitespace(commandBuffer.substr(3));
+
+        if (saveFilename.empty()) {
+            setStatusMessage(EditorCommands::INVALID_FILENAME_MSG);
+
+            return;
+        }
+
+        // Update current filename
+        filename = saveFilename;
+
         saveFile(saveFilename);
-        filename = saveFilename; // Update current filename
-        setStatusMessage("wrote: " + saveFilename);
+
+        setStatusMessage(EditorCommands::WROTE_TO + saveFilename);
     }
 
     commandBuffer.clear();
@@ -406,7 +499,9 @@ void Editor::insertNewline() {
     const std::string new_line = current_line.substr(cur_x);
     current_line = current_line.substr(0, cur_x);
 
-    buffer.insert(buffer.begin() + cur_y + 1, new_line);
+    const auto it = buffer.begin() + static_cast<std::vector<std::string>::difference_type>(cur_y);
+
+    buffer.insert(it + 1, new_line);
 
     ++cur_y;
     cur_x = 0;
@@ -415,10 +510,15 @@ void Editor::insertNewline() {
 void Editor::deleteLine() {
     if (cur_y < 0 || cur_y >= buffer.size()) return;
 
-    buffer.erase(buffer.begin() + cur_y);
+    const auto it = buffer.begin() + static_cast<std::vector<std::string>::difference_type>(cur_y);
+
+    buffer.erase(it);
 
     // Move cursor up to start of previous line
-    --cur_y;
+    cur_x = 0;
+    if (cur_y > 0) {
+        --cur_y;
+    }
 }
 
 void Editor::updateWindowSize() {
@@ -440,7 +540,8 @@ std::string Editor::expandTabs(const std::string &line) const {
 
     for (const char ch : line) {
         if (ch == '\t') {
-            const int spaces = TAB_WIDTH - (result.length() % TAB_WIDTH);
+            const size_t spaces = TAB_WIDTH;// - (result.length() % TAB_WIDTH);
+
             result += std::string(spaces, ' ');
         } else {
             result += ch;
@@ -450,7 +551,7 @@ std::string Editor::expandTabs(const std::string &line) const {
     return result;
 }
 
-int Editor::getRenderX(const std::string &line, int cur_x) const {
+int Editor::getRenderX(const std::string &line, const size_t cur_x) const {
     int rx = 0;
 
     for (int i = 0; i < cur_x && i < line.size(); ++i) {
@@ -464,17 +565,7 @@ int Editor::getRenderX(const std::string &line, int cur_x) const {
     return rx;
 }
 
-void Editor::editMode() {
-    mode = EDIT;
-    setCursorShapeInsert();
-}
-
-void Editor::normalMode() {
-    mode = VIEW;
-    setCursorShapeNormal();
-}
-
-void Editor::setStatusMessage(const std::string &msg) {
+void Editor::setStatusMessage(const std::string &msg) const {
     statusMessage = msg;
     statusMessageTime = std::chrono::steady_clock::now();
 }
@@ -485,6 +576,16 @@ void Editor::setCursorShapeNormal() {
 
 void Editor::setCursorShapeInsert() {
     std::cout << "\033[5 q"; // Blinking bar
+}
+
+void Editor::editMode() {
+    mode = EDIT;
+    setCursorShapeInsert();
+}
+
+void Editor::normalMode() {
+    mode = VIEW;
+    setCursorShapeNormal();
 }
 
 void Editor::deleteToEol() {
@@ -507,7 +608,7 @@ void Editor::jumpWord() {
 
     while (i < len) {
         if (!std::isalnum(line[i]) || line[i] == ' ') {
-            cur_x = static_cast<int>(i);
+            cur_x = i;
 
             break;
         }
@@ -515,10 +616,52 @@ void Editor::jumpWord() {
         // If we've scanned the whole line and found no jump-to point,
         // just move to eol
         if (i + 1 >= len) {
-            cur_x = static_cast<int>(len) - 1;
+            cur_x = len - 1;
             break;
         }
 
         ++i;
     }
+}
+
+void Editor::jumpBack() {
+    if (cur_x <= 0) return;
+
+    const std::string& line = buffer[cur_y];
+    const size_t len = line.length();
+
+}
+
+void Editor::jumpToEnd() {
+    if (cur_x >= buffer[cur_y].size()) return;
+
+    buffer[cur_y].resize(buffer[cur_y].size(), ' ');
+
+    cur_x = buffer[cur_y].length();
+}
+
+void Editor::trimWhitespace(std::string &line) {
+    const auto trimCharacters = " \t";
+
+    if (const size_t firstNonWhitespace = line.find_first_not_of(trimCharacters);
+        firstNonWhitespace != std::string::npos) {
+        line = line.substr(firstNonWhitespace);
+    }
+
+    if (const size_t lastNonWhitespace = line.find_last_not_of(trimCharacters);
+        lastNonWhitespace != std::string::npos) {
+        line = line.substr(lastNonWhitespace + 1, line.length());
+    }
+}
+
+std::string Editor::trimWhitespace(const std::string &line) {
+    const auto trimCharacters = " ";
+
+    const size_t first = line.find_first_not_of(trimCharacters);
+    if (first == std::string::npos)
+        return ""; // All spaces
+
+    const size_t last = line.find_last_not_of(trimCharacters);
+
+    return line.substr(first, last - first + 1);
 }

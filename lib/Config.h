@@ -19,19 +19,21 @@ namespace QEditor {
         Config();
         ~Config();
 
+        static constexpr const char* CONFIG_FILENAME = ".qeditrc";
+
         // Parse the config file
         void parse();
         
         // Get config values with type conversion
-        std::optional<std::string> getString(const std::string& key) const;
-        std::optional<int> getInt(const std::string& key) const;
-        std::optional<bool> getBool(const std::string& key) const;
+        [[nodiscard]] std::optional<std::string> getString(const std::string& key) const;
+        [[nodiscard]] std::optional<int> getInt(const std::string& key) const;
+        [[nodiscard]] std::optional<bool> getBool(const std::string& key) const;
         
         // Set config values
         void set(const std::string& key, const ConfigValue& value);
         
         // Check if a key exists
-        bool hasKey(const std::string& key) const;
+        [[nodiscard]] bool hasKey(const std::string& key) const;
         
         // Get the path to the config file
         static std::string getConfigFilePath();
