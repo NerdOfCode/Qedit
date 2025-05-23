@@ -1,5 +1,4 @@
 #include "QEditor.h"
-
 #include <fstream>
 #include <termios.h>
 #include <unistd.h>
@@ -8,6 +7,7 @@
 #include <sys/ioctl.h>
 
 #include "EditorCommands.h"
+#include "../lib/EditorError.h"
 
 namespace {
     termios orig_termios;
@@ -294,59 +294,83 @@ void Editor::deleteChar() {
 }
 
 void Editor::loadFile(const std::string& filename) {
-    std::ifstream file;
-
-    this->filename = filename;
-
-    file.open(filename, std::ios::in | std::ios::out);
-
-    // File does not exist, create it...
-    if (!file) {
-        std::cerr << "Failed to open file: " << filename << std::endl;
-        buffer.emplace_back("");
-
-        return;
+    if (filename.empty()) {
+        throw QEditor::FileError("Empty filename");
     }
 
-    buffer.clear();
-    std::string line;
-    while (std::getline(file, line)) {
-        buffer.push_back(line);
-    }
-
-    file.close();
-}
-
-void Editor::saveFile(const std::string& filename) const {
-    // Trim whitespaces on the ends of the filename
-    const std::string trimmedFilename = trimWhitespace(filename);
-
-    if (trimmedFilename.empty()) {
-        setStatusMessage(EditorCommands::INVALID_FILENAME_MSG);
-
-        return;
-    }
-
-    std::ofstream file(trimmedFilename);
-
-    if (!file) {
-        std::ofstream newFile(filename);
-
-        newFile.close();
-
-        file.open(filename, std::ios::in | std::ios::out);
-
-        if (!file) {
-            std::cerr << "Failed to open" + filename + " after creation\n";
-            return;
+    // Check if file exists and is readable
+    if (std::filesystem::exists(filename)) {
+        if (access(filename.c_str(), R_OK) != 0) {
+            throw QEditor::FilePermissionError(filename);
         }
     }
 
-    for (const std::string& line : buffer) {
-        file << line << std::endl;
+    std::ifstream file(filename, std::ios::in);
+    if (!file) {
+        // File doesn't exist, create empty buffer
+        this->filename = filename;
+        buffer.clear();
+        buffer.emplace_back("");
+        setStatusMessage("New file: " + filename);
+        return;
     }
 
-    file.close();
+    try {
+        this->filename = filename;
+        buffer.clear();
+        std::string line;
+        while (std::getline(file, line)) {
+            buffer.push_back(line);
+        }
+
+        if (buffer.empty()) {
+            buffer.emplace_back("");
+        }
+
+        setStatusMessage("\"" + filename + "\" " + std::to_string(buffer.size()) + " lines");
+    } catch (const std::exception& e) {
+        throw QEditor::FileOpenError(filename + ": " + e.what());
+    }
+}
+
+void Editor::saveFile(const std::string& filename) const {
+    const std::string trimmedFilename = trimWhitespace(filename);
+    if (trimmedFilename.empty()) {
+        throw QEditor::FileError("Empty filename");
+    }
+
+    // Check if we can write to the directory
+    const std::filesystem::path filePath(trimmedFilename);
+    const std::filesystem::path dirPath = filePath.parent_path();
+    
+    if (!dirPath.empty() && std::filesystem::exists(dirPath)) {
+        if (access(dirPath.c_str(), W_OK) != 0) {
+            throw QEditor::FilePermissionError(dirPath.string());
+        }
+    }
+
+    // Check if file exists and is writable
+    if (std::filesystem::exists(trimmedFilename)) {
+        if (access(trimmedFilename.c_str(), W_OK) != 0) {
+            throw QEditor::FilePermissionError(trimmedFilename);
+        }
+    }
+
+    std::ofstream file(trimmedFilename);
+    if (!file) {
+        throw QEditor::FileSaveError(trimmedFilename);
+    }
+
+    try {
+        for (const std::string& line : buffer) {
+            if (!(file << line << std::endl)) {
+                throw QEditor::FileSaveError(trimmedFilename + ": Write failed");
+            }
+        }
+        setStatusMessage(EditorCommands::WROTE_TO + trimmedFilename);
+    } catch (const std::exception& e) {
+        throw QEditor::FileSaveError(trimmedFilename + ": " + e.what());
+    }
 }
 
 void Editor::drawScreen() const {
@@ -426,50 +450,43 @@ void Editor::drawScreen() const {
 }
 
 void Editor::processCommand() {
-    if (commandBuffer == EditorCommands::WRITE ||
-        commandBuffer == EditorCommands::WRITE_QUIT) {
-        std::string file = this->filename;
+    try {
+        if (commandBuffer == EditorCommands::WRITE ||
+            commandBuffer == EditorCommands::WRITE_QUIT) {
+            std::string file = this->filename;
 
-        if (file.empty()) {
-            const std::optional<std::string> defaultFilename = config.getString("default_filename");
-
-            if (defaultFilename && !defaultFilename->empty()) {
-                file = *defaultFilename;
-            } else {
-                setStatusMessage(EditorCommands::INVALID_FILENAME_MSG);
-
-                return;
+            if (file.empty()) {
+                const std::optional<std::string> defaultFilename = config.getString("default_filename");
+                if (defaultFilename && !defaultFilename->empty()) {
+                    file = *defaultFilename;
+                } else {
+                    throw QEditor::CommandError("No filename provided and no default filename set");
+                }
             }
+
+            saveFile(file);
         }
 
-        saveFile(file);
-        setStatusMessage(EditorCommands::WROTE_TO + file);
-    }
-
-    if (commandBuffer == EditorCommands::QUIT ||
-        commandBuffer == EditorCommands::WRITE_QUIT) {
-        running = false;
-    }
-
-    if (commandBuffer.substr(0, 3) == EditorCommands::WRITE + " ") {
-        // Save to specified file
-        const std::string saveFilename = trimWhitespace(commandBuffer.substr(3));
-
-        if (saveFilename.empty()) {
-            setStatusMessage(EditorCommands::INVALID_FILENAME_MSG);
-
-            return;
+        if (commandBuffer == EditorCommands::QUIT ||
+            commandBuffer == EditorCommands::WRITE_QUIT) {
+            running = false;
         }
 
-        // Update current filename
-        filename = saveFilename;
+        if (commandBuffer.substr(0, 3) == EditorCommands::WRITE + " ") {
+            const std::string saveFilename = trimWhitespace(commandBuffer.substr(3));
+            if (saveFilename.empty()) {
+                throw QEditor::CommandError("Empty filename");
+            }
 
-        saveFile(saveFilename);
+            filename = saveFilename;
+            saveFile(saveFilename);
+        }
 
-        setStatusMessage(EditorCommands::WROTE_TO + saveFilename);
+        commandBuffer.clear();
+    } catch (const QEditor::EditorError& e) {
+        setStatusMessage(e.what());
+        commandBuffer.clear();
     }
-
-    commandBuffer.clear();
 }
 
 void Editor::clearScreen() {
@@ -522,16 +539,24 @@ void Editor::deleteLine() {
 }
 
 void Editor::updateWindowSize() {
-    cur_x = 0;
-    cur_y = 0;
     winsize ws{};
-
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1) {
-        screenRows = 24;
-        screenCols = 80;
-    } else {
-        screenRows = ws.ws_row;
-        screenCols = ws.ws_col;
+        throw QEditor::TerminalError("Failed to get window size");
+    }
+
+    if (ws.ws_row < 1 || ws.ws_col < 1) {
+        throw QEditor::TerminalSizeError(ws.ws_row, ws.ws_col);
+    }
+
+    screenRows = ws.ws_row;
+    screenCols = ws.ws_col;
+
+    // Ensure cursor is within bounds
+    if (cur_y >= screenRows - 1) {
+        cur_y = screenRows - 2;
+    }
+    if (cur_x >= screenCols) {
+        cur_x = screenCols - 1;
     }
 }
 
@@ -614,7 +639,7 @@ void Editor::jumpWord() {
         }
 
         // If we've scanned the whole line and found no jump-to point,
-        // just move to eol
+        // just move to EOL
         if (i + 1 >= len) {
             cur_x = len - 1;
             break;
@@ -622,14 +647,6 @@ void Editor::jumpWord() {
 
         ++i;
     }
-}
-
-void Editor::jumpBack() {
-    if (cur_x <= 0) return;
-
-    const std::string& line = buffer[cur_y];
-    const size_t len = line.length();
-
 }
 
 void Editor::jumpToEnd() {

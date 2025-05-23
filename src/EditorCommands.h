@@ -1,7 +1,3 @@
-//
-// Created by W K on 4/25/25.
-//
-
 #ifndef EDITORCOMMANDS_H
 #define EDITORCOMMANDS_H
 

@@ -1,7 +1,3 @@
-//
-// Created by W K on 4/24/25.
-//
-
 #ifndef CONFIG_H
 #define CONFIG_H
 

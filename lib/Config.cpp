@@ -1,77 +1,95 @@
-//
-// Created by W K on 4/24/25.
-//
-
 #include "Config.h"
+#include "EditorError.h"
 #include <fstream>
 #include <iostream>
-#include <sstream>
 #include <algorithm>
 #include <filesystem>
+#include <pwd.h>
+#include <unistd.h>
 
 namespace QEditor {
-    Config::Config() {
-        parse();
-    }
+    Config::Config() = default;
 
     Config::~Config() = default;
     
     std::string Config::getConfigFilePath() {
-        const char* homeDir = std::getenv("HOME");
-        if (!homeDir) {
-            return "";
+        const char* home = getenv("HOME");
+        if (!home) {
+            // Fallback to getpwuid if HOME is not set
+            if (const passwd* pw = getpwuid(getuid())) {
+                home = pw->pw_dir;
+            } else {
+                throw ConfigError("Could not determine home directory");
+            }
         }
-
-        return std::string(homeDir) + "/" + CONFIG_FILENAME;
+        return std::string(home) + "/" + CONFIG_FILENAME;
     }
     
     void Config::parse() {
-        std::string configPath = getConfigFilePath();
-        if (configPath.empty()) {
-            return;
-        }
+        const std::string configPath = getConfigFilePath();
         
-        std::ifstream configFile(configPath);
-        if (!configFile.is_open()) {
-            // Config file doesn't exist or can't be opened
-            return;
+        // Check if config file exists
+        if (!std::filesystem::exists(configPath)) {
+            return; // No config file is not an error
         }
-        
+
+        // Check file permissions
+        if (access(configPath.c_str(), R_OK) != 0) {
+            throw FilePermissionError(configPath);
+        }
+
+        std::ifstream file(configPath);
+        if (!file) {
+            throw FileOpenError(configPath);
+        }
+
         std::string line;
-        while (std::getline(configFile, line)) {
+        int lineNum = 0;
+        while (std::getline(file, line)) {
+            ++lineNum;
+            
             // Skip empty lines and comments
-            line = trim(line);
             if (line.empty() || line[0] == '#') {
                 continue;
             }
-            
+
             // Parse key=value pair
-            if (size_t pos = line.find('='); pos != std::string::npos) {
-                std::string key = trim(line.substr(0, pos));
-                std::string value = trim(line.substr(pos + 1));
-                
-                if (!key.empty()) {
-                    // Try to determine the type of the value
-                    if (value == "true" || value == "yes" || value == "1") {
-                        set(key, true);
-                    } else if (value == "false" || value == "no" || value == "0") {
-                        set(key, false);
-                    } else {
-                        // Try to parse as an int
-                        try {
-                            int intValue = std::stoi(value);
-                            set(key, intValue);
-                        } catch (...) {
-                            // Not an int, just store as string
-                            set(key, value);
-                        }
-                    }
+            size_t pos = line.find('=');
+            if (pos == std::string::npos) {
+                throw ConfigParseError("Invalid format at line " + std::to_string(lineNum) + 
+                                     ": missing '=' in '" + line + "'");
+            }
+
+            std::string key = trim(line.substr(0, pos));
+            std::string value = trim(line.substr(pos + 1));
+
+            if (key.empty()) {
+                throw ConfigParseError("Empty key at line " + std::to_string(lineNum));
+            }
+
+            // Convert and store the value
+            try {
+                if (value == "true" || value == "yes" || value == "1") {
+                    set(key, true);
+                } else if (value == "false" || value == "no" || value == "0") {
+                    set(key, false);
+                } else if (std::all_of(value.begin(), value.end(), ::isdigit)) {
+                    set(key, std::stoi(value));
+                } else {
+                    set(key, value);
                 }
+            } catch (const std::invalid_argument&) {
+                throw ConfigValueError(key, "valid value");
+            } catch (const std::out_of_range&) {
+                throw ConfigValueError(key, "value within valid range");
             }
         }
     }
     
     void Config::set(const std::string& key, const ConfigValue& value) {
+        if (key.empty()) {
+            throw ConfigError("Cannot set empty key");
+        }
         values[key] = value;
     }
     
@@ -80,91 +98,41 @@ namespace QEditor {
     }
     
     std::optional<std::string> Config::getString(const std::string& key) const {
-        const auto it = values.find(key);
-        if (it == values.end()) {
-            return std::nullopt;
+        if (auto it = values.find(key); it != values.end()) {
+            if (auto* str = std::get_if<std::string>(&it->second)) {
+                return *str;
+            }
+            throw ConfigValueError(key, "string");
         }
-        
-        const ConfigValue& value = it->second;
-        if (std::holds_alternative<std::string>(value)) {
-            return std::get<std::string>(value);
-        }
-
-        if (std::holds_alternative<int>(value)) {
-            return std::to_string(std::get<int>(value));
-        }
-
-        if (std::holds_alternative<bool>(value)) {
-            return std::get<bool>(value) ? "true" : "false";
-        }
-
         return std::nullopt;
     }
     
     std::optional<int> Config::getInt(const std::string& key) const {
-        const auto it = values.find(key);
-        if (it == values.end()) {
-            return std::nullopt;
-        }
-        
-        const ConfigValue& value = it->second;
-        if (std::holds_alternative<int>(value)) {
-            return std::get<int>(value);
-        }
-
-        if (std::holds_alternative<std::string>(value)) {
-            try {
-                return std::stoi(std::get<std::string>(value));
-            } catch (...) {
-                return std::nullopt;
+        if (auto it = values.find(key); it != values.end()) {
+            if (auto* num = std::get_if<int>(&it->second)) {
+                return *num;
             }
+            throw ConfigValueError(key, "integer");
         }
-
-        if (std::holds_alternative<bool>(value)) {
-            return std::get<bool>(value) ? 1 : 0;
-        }
-        
         return std::nullopt;
     }
     
     std::optional<bool> Config::getBool(const std::string& key) const {
-        const auto it = values.find(key);
-        if (it == values.end()) {
-            return std::nullopt;
-        }
-        
-        const ConfigValue& value = it->second;
-        if (std::holds_alternative<bool>(value)) {
-            return std::get<bool>(value);
-        }
-
-        if (std::holds_alternative<int>(value)) {
-            return std::get<int>(value) != 0;
-        }
-
-        if (std::holds_alternative<std::string>(value)) {
-            const auto& strValue = std::get<std::string>(value);
-            if (strValue == "true" || strValue == "yes" || strValue == "1") {
-                return true;
+        if (auto it = values.find(key); it != values.end()) {
+            if (auto* b = std::get_if<bool>(&it->second)) {
+                return *b;
             }
-
-            if (strValue == "false" || strValue == "no" || strValue == "0") {
-                return false;
-            }
+            throw ConfigValueError(key, "boolean");
         }
-        
         return std::nullopt;
     }
     
     std::string Config::trim(const std::string& str) {
-        const auto start = std::find_if_not(str.begin(), str.end(), [](const unsigned char c) {
-            return std::isspace(c);
-        });
-
-        const auto end = std::find_if_not(str.rbegin(), str.rend(), [](const unsigned char c) {
-            return std::isspace(c);
-        }).base();
-        
-        return (start < end) ? std::string(start, end) : std::string();
+        const auto first = str.find_first_not_of(" \t");
+        if (first == std::string::npos) {
+            return "";
+        }
+        const auto last = str.find_last_not_of(" \t");
+        return str.substr(first, (last - first + 1));
     }
 }
