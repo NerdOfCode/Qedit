@@ -1,5 +1,5 @@
 # Qedit Configuration File
-# If you want to configure QEditor, place this file in your home directory: ~/.qedit.rc
+# If you want to configure QEditor, place this file in your home directory: ~/.qeditrc
 
 # Editor settings
 tab_width=8  # Tab width in spaces
