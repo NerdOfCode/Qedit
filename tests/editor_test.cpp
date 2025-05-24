@@ -1,9 +1,18 @@
 #define CATCH_CONFIG_MAIN
+#define TESTING  // Define TESTING before including QEditor.h
 #include <catch2/catch_test_macros.hpp>
 #include "../src/QEditor.h"
 
-TEST_CASE("Basic editor initialization", "[editor]") {
+// Helper function to create a test-ready editor
+Editor createTestEditor() {
     Editor editor;
+    editor.skipTerminalInit();
+    editor.setMockTerminalSize(24, 80);
+    return editor;
+}
+
+TEST_CASE("Basic editor initialization", "[editor]") {
+    Editor editor = createTestEditor();
     REQUIRE(editor.isInNormalMode());
     REQUIRE(editor.getBuffer().empty());
     REQUIRE(editor.getCursorX() == 0);
@@ -11,7 +20,7 @@ TEST_CASE("Basic editor initialization", "[editor]") {
 }
 
 TEST_CASE("Editor mode switching", "[editor]") {
-    Editor editor;
+    Editor editor = createTestEditor();
     
     SECTION("Start in normal mode") {
         REQUIRE(editor.isInNormalMode());
@@ -33,7 +42,7 @@ TEST_CASE("Editor mode switching", "[editor]") {
 }
 
 TEST_CASE("Editor buffer operations", "[editor]") {
-    Editor editor;
+    Editor editor = createTestEditor();
     
     SECTION("Empty buffer") {
         REQUIRE(editor.getBuffer().empty());
@@ -41,7 +50,7 @@ TEST_CASE("Editor buffer operations", "[editor]") {
 }
 
 TEST_CASE("Editor cursor navigation", "[editor]") {
-    Editor editor;
+    Editor editor = createTestEditor();
     
     // Set up a 3x3 grid of text for testing navigation
     editor.editMode();

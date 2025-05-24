@@ -5,6 +5,7 @@
 #include <iostream>
 #include <thread>
 #include <sys/ioctl.h>
+#include <filesystem>
 
 #include "EditorCommands.h"
 #include "../lib/EditorError.h"
@@ -14,8 +15,18 @@ namespace {
 }
 
 Editor::Editor() {
-    enableRawMode();
-    updateWindowSize();
+#ifdef TESTING
+    if (!skipTerminalSetup) {
+#endif
+        enableRawMode();
+        updateWindowSize();
+#ifdef TESTING
+    } else {
+        // Set default terminal size for testing
+        screenRows = 24;
+        screenCols = 80;
+    }
+#endif
 
     // Load configuration
     config.parse();
@@ -32,14 +43,20 @@ Editor::Editor() {
     filename = "";
     commandBuffer = "";
 
-    // Save terminal state and switch to alternate screen
-    std::cout << "\x1b[?1049h" << std::flush;
-    // Clear the alternate screen completely
-    std::cout << "\x1b[2J" << std::flush;
-    // Move to home position
-    std::cout << "\x1b[H" << std::flush;
-    // Disable line wrapping
-    std::cout << "\x1b[?7l" << std::flush;
+#ifdef TESTING
+    if (!skipTerminalSetup) {
+#endif
+        // Save terminal state and switch to alternate screen
+        std::cout << "\x1b[?1049h" << std::flush;
+        // Clear the alternate screen completely
+        std::cout << "\x1b[2J" << std::flush;
+        // Move to home position
+        std::cout << "\x1b[H" << std::flush;
+        // Disable line wrapping
+        std::cout << "\x1b[?7l" << std::flush;
+#ifdef TESTING
+    }
+#endif
 }
 
 Editor::~Editor() {
@@ -539,13 +556,36 @@ void Editor::deleteLine() {
 }
 
 void Editor::updateWindowSize() {
+#ifdef TESTING
+    if (skipTerminalSetup) {
+        // Use default size for testing
+        screenRows = 24;
+        screenCols = 80;
+        return;
+    }
+#endif
+
+    // Check if we're in a terminal
+    if (!isatty(STDOUT_FILENO)) {
+        // Not in a terminal, use default size
+        screenRows = 24;
+        screenCols = 80;
+        return;
+    }
+
     winsize ws{};
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1) {
-        throw QEditor::TerminalError("Failed to get window size");
+        // If we can't get window size, use default
+        screenRows = 24;
+        screenCols = 80;
+        return;
     }
 
     if (ws.ws_row < 1 || ws.ws_col < 1) {
-        throw QEditor::TerminalSizeError(ws.ws_row, ws.ws_col);
+        // Invalid window size, use default
+        screenRows = 24;
+        screenCols = 80;
+        return;
     }
 
     screenRows = ws.ws_row;

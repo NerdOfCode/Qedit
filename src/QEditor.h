@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <chrono>
+#include <csignal>
 #include "../lib/Config.h"
 
 enum Mode { VIEW, EDIT, COMMAND };
@@ -49,8 +50,7 @@ public:
     static void enableRawMode();
     static void disableRawMode();
 
-#ifdef TESTING
-    // Test helper methods
+    // Test helper methods - always available
     [[nodiscard]] bool isInEditMode() const { return mode == EDIT; }
     [[nodiscard]] bool isInNormalMode() const { return mode == VIEW; }
     [[nodiscard]] bool isInCommandMode() const { return mode == COMMAND; }
@@ -67,7 +67,7 @@ public:
     [[nodiscard]] size_t getScreenRows() const { return screenRows; }
     [[nodiscard]] size_t getScreenCols() const { return screenCols; }
 
-    // Test-only methods
+    // Test-only methods - always available
     void setCursorPosition(size_t x, size_t y) {
         cur_x = x;
         cur_y = y;
@@ -76,6 +76,16 @@ public:
         buffer.clear();
         cur_x = 0;
         cur_y = 0;
+    }
+
+#ifdef TESTING
+    // Test-specific terminal handling
+    void skipTerminalInit() {
+        skipTerminalSetup = true;
+    }
+    void setMockTerminalSize(size_t rows, size_t cols) {
+        screenRows = rows;
+        screenCols = cols;
     }
 #endif
 
@@ -100,6 +110,9 @@ private:
     size_t TAB_WIDTH = 4; // Now can be configured
     bool showLineNumbers = false; // Default to not showing line numbers
     bool running = true;
+#ifdef TESTING
+    bool skipTerminalSetup = false;
+#endif
 
     std::string commandBuffer;
     std::vector<std::string> buffer;
