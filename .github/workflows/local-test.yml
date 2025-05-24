@@ -1,0 +1,27 @@
+name: Local Test Workflow
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake
+    
+    - name: Configure
+      run: cmake -B build
+    
+    - name: Build
+      run: cmake --build build
+    
+    - name: Test
+      run: |
+        cd build
+        ctest --output-on-failure 
